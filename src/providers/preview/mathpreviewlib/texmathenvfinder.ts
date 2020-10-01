@@ -156,11 +156,70 @@ export class TeXMathEnvFinder {
     }
 
     private findHoverOnInline(document: vscode.TextDocument | TextDocumentLike, position: vscode.Position): TexMathEnv | undefined {
-        const blockRange = this.findHoverOnInlineInBlock(document, position)
-        if (blockRange !== undefined) {
-            return { texString: document.getText(blockRange), range: blockRange, envname: '$' }
+        let maxInspectedLines = 50
+
+        // matches a single $ which is not preceded by \ and neither followed nor preceded by $
+        const singleDollarRegex = /(?<!\$|\\)\$(?!\$)/g
+
+        let positions: vscode.Position[] = []
+        for (let line, linePos = position.line;
+            linePos >= 0 && (line = document.lineAt(linePos).text);
+            linePos--) {
+
+            if (maxInspectedLines-- <= 0) {
+                return this.findHoverOnInlineFallback(document, position)
+            }
+
+            const linePositions: vscode.Position[] = []
+            let match = null
+            while ((match = singleDollarRegex.exec(line))) {
+                if (linePos === position.line && match.index > position.character) {
+                    // Skip dollars on the same line that appear after the cursor
+                    continue
+                }
+                linePositions.push(new vscode.Position(linePos, match.index))
+            }
+            // reverse linePositions because they appear from first to last
+            // instead of the other way around
+            positions = positions.concat(linePositions.reverse())
         }
 
+        if (positions.length <= 0) {
+            return undefined // no opening dollar sign -> not in math mode
+        }
+
+        const firstPos = positions[0]
+        if (positions.length % 2 === 0) {
+            if (firstPos.isEqual(position)) {
+                const range = new vscode.Range(positions[1].translate(undefined, 1), firstPos)
+                return { texString: document.getText(range), range, envname: '$' }
+            } else {
+                return undefined // even number of dollars in front -> not in math mode
+            }
+        }
+
+        for (let line, linePos = position.line;
+            linePos < document.lineCount && (line = document.lineAt(linePos).text);
+            linePos++) {
+
+            let match = null
+            while ((match = singleDollarRegex.exec(line))) {
+                if (linePos > position.line || match.index > position.character) {
+                    // only consider matches that appear after the cursor position
+                    const range = new vscode.Range(firstPos.line, firstPos.character + 1, linePos, match.index)
+                    return { texString: document.getText(range), range, envname: '$' }
+                }
+            }
+
+            if (maxInspectedLines-- <= 0) {
+                return this.findHoverOnInlineFallback(document, position)
+            }
+        }
+
+        return undefined
+    }
+
+    private findHoverOnInlineFallback(document: vscode.TextDocument | TextDocumentLike, position: vscode.Position): TexMathEnv | undefined {
         const currentLine = document.lineAt(position.line).text
         const regex = /(?<!\$|\\)\$(?!\$)(?:\\.|[^\\])+?\$|\\\(.+?\\\)/
         let s = currentLine
@@ -182,67 +241,6 @@ export class TeXMathEnvFinder {
             }
             m = s.match(regex)
         }
-        return undefined
-    }
-
-    private findHoverOnInlineInBlock(document: vscode.TextDocument | TextDocumentLike, position: vscode.Position): vscode.Range | undefined {
-        console.log('Searching for inline math environment:')
-
-        // matches a single $ which is not preceded by \ and neither followed nor preceded by $
-        const singleDollarRegex = /(?<!\$|\\)\$(?!\$)/g
-
-        let positions: vscode.Position[] = []
-        for (let line, linePos = position.line;
-            linePos >= 0 && (line = document.lineAt(linePos).text);
-            linePos--) {
-            const linePositions: vscode.Position[] = []
-            let match = null
-            while ((match = singleDollarRegex.exec(line))) {
-                if (linePos === position.line && match.index > position.character) {
-                    // Skip dollars on the same line that appear after the cursor
-                    continue
-                }
-                linePositions.push(new vscode.Position(linePos, match.index))
-            }
-            positions = positions.concat(linePositions.reverse())
-        }
-
-        console.log('Found positions: ' + positions.length)
-
-        if (positions.length <= 0) {
-            return undefined // could not find an opening dollar sign
-        }
-
-        let firstPos = positions[0]
-        if (positions.length % 2 === 0) {
-            // an even number of dollar signs indicates that the cursor is not
-            // inside of a math environment. The only exception is if the cursor
-            // is on a dollar sign. In this case the math environment must be
-            // built between this dollar sign and the immediate predecessor.
-
-            if (firstPos.isEqual(position)) {
-                console.log('eq pos')
-                firstPos = positions[1]
-            } else {
-                return undefined
-            }
-        }
-
-        const endSearchPos = firstPos.isEqual(position)
-            ? position.translate(undefined, 1) : position
-
-        for (let linePos = endSearchPos.line, line = undefined;
-            linePos < document.lineCount && (line = document.lineAt(linePos).text);
-            linePos++) {
-
-            let match = null
-            while ((match = singleDollarRegex.exec(line))) {
-                if (linePos !== endSearchPos.line || match.index >= endSearchPos.character) {
-                    return new vscode.Range(firstPos.line, firstPos.character + 1, linePos, match.index)
-                }
-            }
-        }
-
         return undefined
     }
 }
